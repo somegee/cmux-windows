@@ -105,13 +105,26 @@ public class TerminalBuffer
     public void SetChar(int row, int col, char ch, TerminalAttribute attr)
     {
         if (row < 0 || row >= Rows || col < 0 || col >= Cols) return;
+        int charWidth = UnicodeWidth.GetWidth(ch);
         _cells[row, col] = new TerminalCell
         {
             Character = ch,
             Attribute = attr,
             IsDirty = true,
-            Width = 1,
+            Width = charWidth,
         };
+
+        // For wide characters, fill the next cell as a spacer
+        if (charWidth == 2 && col + 1 < Cols)
+        {
+            _cells[row, col + 1] = new TerminalCell
+            {
+                Character = '\0',
+                Attribute = attr,
+                IsDirty = true,
+                Width = 0,
+            };
+        }
     }
 
     /// <summary>
@@ -123,7 +136,17 @@ public class TerminalBuffer
         if (!ClampCursorToBounds())
             return;
 
+        int charWidth = UnicodeWidth.GetWidth(c);
+
         if (_wrapPending && AutoWrapMode)
+        {
+            CarriageReturn();
+            LineFeed();
+            _wrapPending = false;
+        }
+
+        // For wide chars, if we're at the last column, wrap first
+        if (charWidth == 2 && CursorCol + 1 >= Cols && AutoWrapMode)
         {
             CarriageReturn();
             LineFeed();
@@ -133,8 +156,9 @@ public class TerminalBuffer
         if (InsertMode)
         {
             // Shift characters right
-            for (int col = Cols - 1; col > CursorCol; col--)
-                _cells[CursorRow, col] = _cells[CursorRow, col - 1];
+            int shift = charWidth;
+            for (int col = Cols - 1; col > CursorCol + shift - 1; col--)
+                _cells[CursorRow, col] = _cells[CursorRow, col - shift];
         }
 
         if (CursorRow >= 0 && CursorRow < Rows && CursorCol >= 0 && CursorCol < Cols)
@@ -144,17 +168,30 @@ public class TerminalBuffer
                 Character = c,
                 Attribute = CurrentAttribute,
                 IsDirty = true,
-                Width = 1,
+                Width = charWidth,
             };
+
+            // For wide characters, fill the next cell as a spacer
+            if (charWidth == 2 && CursorCol + 1 < Cols)
+            {
+                _cells[CursorRow, CursorCol + 1] = new TerminalCell
+                {
+                    Character = '\0',
+                    Attribute = CurrentAttribute,
+                    IsDirty = true,
+                    Width = 0, // spacer cell (second half of wide char)
+                };
+            }
         }
 
-        if (CursorCol + 1 >= Cols)
+        int advance = charWidth;
+        if (CursorCol + advance >= Cols)
         {
             _wrapPending = true;
         }
         else
         {
-            CursorCol++;
+            CursorCol += advance;
         }
     }
 

@@ -441,7 +441,13 @@ public class TerminalControl : FrameworkElement
                         cell = TerminalCell.Empty;
                     }
 
+                    // Skip spacer cells (second half of wide characters)
+                    if (cell.Width == 0)
+                        continue;
+
                     double x = c * _cellWidth;
+                    int cellDisplayWidth = cell.Width > 1 ? cell.Width : 1;
+                    double cellPixelWidth = cellDisplayWidth * _cellWidth;
                     var attr = cell.Attribute;
                     bool isSelected = _selection.IsSelected(visRow, c);
                     bool isInverse = attr.Flags.HasFlag(CellFlags.Inverse) != isSelected;
@@ -462,30 +468,31 @@ public class TerminalControl : FrameworkElement
                     if (isSelected && _theme.SelectionBackground.HasValue)
                         cellBg = _theme.SelectionBackground.Value;
 
-                    // Draw cell background
+                    // Draw cell background (use full width for wide chars)
                     if (!cellBg.IsDefault)
                     {
                         dc.DrawRectangle(GetCachedBrush(ToWpfColor(cellBg)), null,
-                            new Rect(x, y, _cellWidth, _cellHeight));
+                            new Rect(x, y, cellPixelWidth, _cellHeight));
                     }
 
                     // Search match highlight (behind text)
                     bool isSearchMatch = searchMatchSet.Contains((visRow, c));
                     bool isCurrentMatch = currentMatchSet.Contains((visRow, c));
                     if (isCurrentMatch)
-                        dc.DrawRectangle(currentMatchBrush, null, new Rect(x, y, _cellWidth, _cellHeight));
+                        dc.DrawRectangle(currentMatchBrush, null, new Rect(x, y, cellPixelWidth, _cellHeight));
                     else if (isSearchMatch)
-                        dc.DrawRectangle(searchMatchBrush, null, new Rect(x, y, _cellWidth, _cellHeight));
+                        dc.DrawRectangle(searchMatchBrush, null, new Rect(x, y, cellPixelWidth, _cellHeight));
 
                     // URL hover highlight
                     if (_hoveredUrl is { } url && visRow == url.row && c >= url.startCol && c <= url.endCol)
                     {
                         var urlPen = new Pen(GetCachedBrush(Color.FromRgb(0x81, 0x8C, 0xF8)), 1);
                         urlPen.Freeze();
-                        dc.DrawLine(urlPen, new Point(x, y + _cellHeight - 1), new Point(x + _cellWidth, y + _cellHeight - 1));
+                        dc.DrawLine(urlPen, new Point(x, y + _cellHeight - 1), new Point(x + cellPixelWidth, y + _cellHeight - 1));
                     }
 
                     // Text batching: group consecutive characters with same visual style
+                    // For wide chars, flush any existing run first and draw individually
                     bool hasChar = cell.Character != '\0' && cell.Character != ' ';
                     if (hasChar)
                     {
@@ -496,29 +503,69 @@ public class TerminalControl : FrameworkElement
                         bool underline = attr.Flags.HasFlag(CellFlags.Underline);
                         bool strikethrough = attr.Flags.HasFlag(CellFlags.Strikethrough);
 
-                        // Style changed? Flush the current run first
-                        if (runStartCol >= 0 && (fgColor != runFgColor || bold != runBold ||
-                            italic != runItalic || dim != runDim ||
-                            underline != runUnderline || strikethrough != runStrikethrough))
+                        // Wide chars break text runs — flush first
+                        if (cellDisplayWidth > 1 && runStartCol >= 0)
                         {
                             FlushTextRun(dc, dpi, y, runStartCol, runFgColor, runBold, runItalic, runDim, runUnderline, runStrikethrough);
                             runStartCol = -1;
                         }
 
-                        // Start new run or continue existing
-                        if (runStartCol < 0)
+                        if (cellDisplayWidth > 1)
                         {
-                            runStartCol = c;
-                            runFgColor = fgColor;
-                            runBold = bold;
-                            runItalic = italic;
-                            runDim = dim;
-                            runUnderline = underline;
-                            runStrikethrough = strikethrough;
-                            _textRunBuffer.Clear();
-                        }
+                            // Draw wide character individually
+                            var brush = dim
+                                ? GetCachedBrush(Color.FromArgb(128, fgColor.R, fgColor.G, fgColor.B))
+                                : GetCachedBrush(fgColor);
+                            var tf = GetTypeface(bold, italic);
+                            var text = new FormattedText(
+                                cell.Character.ToString(),
+                                System.Globalization.CultureInfo.CurrentCulture,
+                                FlowDirection.LeftToRight,
+                                tf,
+                                _fontSize,
+                                brush,
+                                dpi);
+                            dc.DrawText(text, new Point(x, y));
 
-                        _textRunBuffer.Append(cell.Character);
+                            if (underline)
+                            {
+                                var pen = new Pen(brush, 1);
+                                pen.Freeze();
+                                dc.DrawLine(pen, new Point(x, y + _cellHeight - 1), new Point(x + cellPixelWidth, y + _cellHeight - 1));
+                            }
+                            if (strikethrough)
+                            {
+                                var pen = new Pen(brush, 1);
+                                pen.Freeze();
+                                dc.DrawLine(pen, new Point(x, y + _cellHeight / 2), new Point(x + cellPixelWidth, y + _cellHeight / 2));
+                            }
+                        }
+                        else
+                        {
+                            // Style changed? Flush the current run first
+                            if (runStartCol >= 0 && (fgColor != runFgColor || bold != runBold ||
+                                italic != runItalic || dim != runDim ||
+                                underline != runUnderline || strikethrough != runStrikethrough))
+                            {
+                                FlushTextRun(dc, dpi, y, runStartCol, runFgColor, runBold, runItalic, runDim, runUnderline, runStrikethrough);
+                                runStartCol = -1;
+                            }
+
+                            // Start new run or continue existing
+                            if (runStartCol < 0)
+                            {
+                                runStartCol = c;
+                                runFgColor = fgColor;
+                                runBold = bold;
+                                runItalic = italic;
+                                runDim = dim;
+                                runUnderline = underline;
+                                runStrikethrough = strikethrough;
+                                _textRunBuffer.Clear();
+                            }
+
+                            _textRunBuffer.Append(cell.Character);
+                        }
                     }
                     else if (runStartCol >= 0)
                     {
